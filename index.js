@@ -8,7 +8,7 @@ import { fileURLToPath } from "url";
 import { dirname } from "path";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
-import mongoose from "mongoose"; // Add this import
+import mongoose from "mongoose";
 
 // Import routes
 import connection from "./utils/DbConnection.js";
@@ -46,7 +46,7 @@ app.set("trust proxy", 1);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// FIXED: Enhanced CORS configuration - this should be before other middleware
+// FIXED: Enhanced CORS configuration with all necessary headers
 const corsOptions = {
   origin: function (origin, callback) {
     const allowedOrigins = [
@@ -74,6 +74,17 @@ const corsOptions = {
     "Origin",
     "Access-Control-Request-Method",
     "Access-Control-Request-Headers",
+    "Cache-Control", // Added this
+    "Pragma",       // Added this
+    "Expires",      // Added this
+    "Connection",   // Added this
+    "Keep-Alive"    // Added this
+  ],
+  exposedHeaders: [
+    "Content-Length",
+    "X-Foo",
+    "X-Bar",
+    "Cache-Control"
   ],
   credentials: true,
   optionsSuccessStatus: 200,
@@ -86,20 +97,23 @@ app.use(cors(corsOptions));
 // Handle preflight requests explicitly
 app.options("*", cors(corsOptions));
 
-// Add connection headers middleware
-app.use((req, res, next) => {
-  res.setHeader("Connection", "keep-alive");
-  res.setHeader("Keep-Alive", "timeout=30");
-  next();
-});
+// REMOVED: Connection headers middleware that was causing issues
+// The browser automatically handles Connection headers, setting them manually can cause conflicts
 
 // Basic middleware
 app.use(cookieParser());
 app.use(express.json({ limit: "10kb" }));
 
-// FIXED: Status endpoint with proper database check
+// FIXED: Status endpoint with proper database check and CORS headers
 app.get("/api/status", async (req, res) => {
   try {
+    // Set CORS headers explicitly for this endpoint
+    res.header("Access-Control-Allow-Origin", req.headers.origin || "*");
+    res.header("Access-Control-Allow-Credentials", "true");
+    res.header("Cache-Control", "no-cache, no-store, must-revalidate");
+    res.header("Pragma", "no-cache");
+    res.header("Expires", "0");
+
     let dbStatus = "disconnected";
 
     if (mongoose.connection.readyState === 1) {
@@ -118,6 +132,8 @@ app.get("/api/status", async (req, res) => {
     });
   } catch (error) {
     console.error("Status check error:", error);
+    res.header("Access-Control-Allow-Origin", req.headers.origin || "*");
+    res.header("Access-Control-Allow-Credentials", "true");
     res.status(500).json({
       status: "degraded",
       error: error.message,
@@ -129,6 +145,9 @@ app.get("/api/status", async (req, res) => {
 
 // Ready endpoint
 app.get("/api/ready", (req, res) => {
+  res.header("Access-Control-Allow-Origin", req.headers.origin || "*");
+  res.header("Access-Control-Allow-Credentials", "true");
+  
   if (isReady) {
     res.status(200).json({ status: "ready", message: "Server is ready" });
   } else {
@@ -138,8 +157,14 @@ app.get("/api/ready", (req, res) => {
   }
 });
 
-// Root endpoint for basic health check
+// Root endpoint for basic health check with CORS headers
 app.get("/", (req, res) => {
+  res.header("Access-Control-Allow-Origin", req.headers.origin || "*");
+  res.header("Access-Control-Allow-Credentials", "true");
+  res.header("Cache-Control", "no-cache, no-store, must-revalidate");
+  res.header("Pragma", "no-cache");
+  res.header("Expires", "0");
+  
   res.status(200).json({
     message: "Portfolio Backend API",
     status: "running",
@@ -151,12 +176,15 @@ app.get("/", (req, res) => {
 app.use(sessionMiddleware);
 app.use(trackPageView);
 
-// Security middleware
+// FIXED: Security middleware with relaxed settings for development
 app.use(
   helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" },
     crossOriginOpenerPolicy: { policy: "unsafe-none" },
     crossOriginEmbedderPolicy: { policy: "unsafe-none" },
+    // Disable some strict policies that might interfere
+    contentSecurityPolicy: false,
+    hsts: false,
   })
 );
 
@@ -168,11 +196,12 @@ app.use(
       res.set("Cache-Control", "no-cache");
       res.set("Pragma", "no-cache");
       res.set("Expires", "0");
+      res.set("Access-Control-Allow-Origin", "*");
     },
   })
 );
 
-// FIXED: Rate limiters with better configuration
+// FIXED: Rate limiters with better error handling
 const adminLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
   max: 100,
@@ -181,6 +210,10 @@ const adminLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => {
+    // Skip rate limiting for health checks
+    return req.path === '/api/status' || req.path === '/api/ready' || req.path === '/';
+  },
   handler: (req, res) => {
     res.status(429).json({
       error: "Too many requests",
@@ -199,6 +232,10 @@ const portfolioLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => {
+    // Skip rate limiting for health checks
+    return req.path === '/api/status' || req.path === '/api/ready' || req.path === '/';
+  },
   handler: (req, res) => {
     res.status(429).json({
       error: "Too many requests",
@@ -219,7 +256,7 @@ app.post("/api/admin/clear-cache", (req, res) => {
   }
 });
 
-// Apply rate limiting
+// Apply rate limiting (but not to health check endpoints)
 app.use("/api/auth", adminLimiter);
 app.use("/api/home", adminLimiter);
 app.use("/api/about", adminLimiter);
@@ -255,7 +292,7 @@ app.use("/api/certificate", certificateRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/messages", messageRoutes);
 app.use("/api/user", userDataRoutes);
-app.use("/api/upload", uploadRoutes); // Fixed: use uploadRoutes instead of UpdateData
+app.use("/api/upload", uploadRoutes);
 app.use("/api/views", adminViewsRoutes);
 
 // 404 handler for undefined routes
@@ -296,6 +333,11 @@ const server = app.listen(port, () => {
   console.log(`Server is running on port ${port}`);
   console.log(`Environment: ${process.env.NODE_ENV || "development"}`);
   connectDatabase();
+});
+
+// Handle server errors
+server.on('error', (error) => {
+  console.error('Server error:', error);
 });
 
 // Graceful shutdown
