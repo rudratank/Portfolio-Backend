@@ -33,6 +33,11 @@ import cacheMiddleware, {
 
 let isReady = false;
 
+server.timeout = 30000;
+// Configuration
+const app = express();
+const port = process.env.PORT || 3005;
+const databaseurl = process.env.DATABASE_URL;
 app.get("/api/ready", (req, res) => {
   if (isReady) {
     res.status(200).send("Ready");
@@ -40,12 +45,6 @@ app.get("/api/ready", (req, res) => {
     res.status(503).send("Initializing");
   }
 });
-
-server.timeout = 30000;
-// Configuration
-const app = express();
-const port = process.env.PORT || 3005;
-const databaseurl = process.env.DATABASE_URL;
 
 // Enable trust proxy - Add this before other middleware
 app.set("trust proxy", 1);
@@ -217,4 +216,4 @@ app.listen(port, () => {
 connection(databaseurl).then(() => {
   isReady = true;
 });
-a
+a;
