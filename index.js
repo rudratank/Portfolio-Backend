@@ -31,6 +31,16 @@ import cacheMiddleware, {
   clearAllCache,
 } from "./Middleware/catchMiddleware.js";
 
+let isReady = false;
+
+app.get("/api/ready", (req, res) => {
+  if (isReady) {
+    res.status(200).send("Ready");
+  } else {
+    res.status(503).send("Initializing");
+  }
+});
+
 server.timeout = 30000;
 // Configuration
 const app = express();
@@ -204,4 +214,6 @@ app.listen(port, () => {
 });
 
 // Database connection
-connection(databaseurl);
+connection(databaseurl).then(() => {
+  isReady = true;
+});
