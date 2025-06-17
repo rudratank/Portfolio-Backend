@@ -31,6 +31,7 @@ import cacheMiddleware, {
   clearAllCache,
 } from "./Middleware/catchMiddleware.js";
 
+server.timeout = 30000;
 // Configuration
 const app = express();
 const port = process.env.PORT || 3005;
@@ -45,37 +46,60 @@ const __dirname = dirname(__filename);
 
 // Middleware
 // Updated CORS configuration
-app.use(
-  cors({
-    origin: [
-      "https://rudracodes.netlify.app",
-      "http://localhost:5173",
-      // Add any other domains you need
-    ],
-    methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allowedHeaders: [
-      "Content-Type",
-      "Authorization",
-      "X-Requested-With",
-      "Accept",
-      "Origin",
-      "Access-Control-Allow-Headers",
-      "Access-Control-Request-Headers",
-      "Access-Control-Request-Method",
-    ],
-    credentials: true,
-    preflightContinue: false,
-    optionsSuccessStatus: 204,
-  })
-);
-// Simple server status endpoint
-// Simple server status endpoint
-app.get("/api/status", (req, res) => {
-  res.status(200).json({
-    status: "online",
-    timestamp: new Date().toISOString(),
-    service: "portfolio-backend",
-  });
+app.use((req, res, next) => {
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("Keep-Alive", "timeout=30");
+  next();
+});
+
+// Enhanced CORS configuration
+const corsOptions = {
+  origin: ["https://rudracodes.netlify.app", "http://localhost:5173"],
+  methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "X-Requested-With",
+    "Accept",
+    "Origin",
+  ],
+  credentials: true,
+  optionsSuccessStatus: 204,
+};
+
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
+
+// Database connection optimization
+connection(databaseurl, {
+  connectTimeoutMS: 30000,
+  socketTimeoutMS: 45000,
+  serverSelectionTimeoutMS: 30000,
+  maxPoolSize: 10,
+  retryWrites: true,
+  retryReads: true,
+});
+
+// Replace your current /api/status endpoint with this
+app.get("/api/status", async (req, res) => {
+  try {
+    // Add database connectivity check
+    const dbStatus = await mongoose.connection.db.admin().ping();
+
+    res.status(200).json({
+      status: "online",
+      timestamp: new Date().toISOString(),
+      database: dbStatus.ok ? "connected" : "disconnected",
+      service: "portfolio-backend",
+      uptime: process.uptime(),
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: "degraded",
+      error: error.message,
+      database: "disconnected",
+    });
+  }
 });
 //app.use(cacheMiddleware);
 app.post("/api/admin/clear-cache", (req, res) => {
@@ -151,8 +175,6 @@ app.post("/api/admin/login", async (req, res) => {
     // Rest of your login code
   }
 });
-
-
 
 app.post("/api/admin/clear-active-status", (req, res) => {
   isAdminActive = false;
