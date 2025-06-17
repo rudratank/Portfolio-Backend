@@ -44,23 +44,28 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 // Middleware
+// Updated CORS configuration
 app.use(
   cors({
     origin: [
-      "http://rudracodes.netlify.app",
       "https://rudracodes.netlify.app",
       "http://localhost:5173",
+      // Add any other domains you need
     ],
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    credentials: true,
     allowedHeaders: [
       "Content-Type",
       "Authorization",
-      "Cache-Control",
-      "Pragma",
-      "Expires",
+      "X-Requested-With",
+      "Accept",
+      "Origin",
+      "Access-Control-Allow-Headers",
+      "Access-Control-Request-Headers",
+      "Access-Control-Request-Method",
     ],
-    exposedHeaders: ["Content-Disposition"],
+    credentials: true,
+    preflightContinue: false,
+    optionsSuccessStatus: 204,
   })
 );
 // Simple server status endpoint
@@ -146,6 +151,8 @@ app.post("/api/admin/login", async (req, res) => {
     // Rest of your login code
   }
 });
+
+
 
 app.post("/api/admin/clear-active-status", (req, res) => {
   isAdminActive = false;
