@@ -8,6 +8,7 @@ import { fileURLToPath } from "url";
 import { dirname } from "path";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
+import mongoose from "mongoose"; // Add this import
 
 // Import routes
 import connection from "./utils/DbConnection.js";
@@ -37,32 +38,33 @@ let isReady = false;
 const app = express();
 const port = process.env.PORT || 3005;
 const databaseurl = process.env.DATABASE_URL;
-app.get("/api/ready", (req, res) => {
-  if (isReady) {
-    res.status(200).send("Ready");
-  } else {
-    res.status(503).send("Initializing");
-  }
-});
 
-// Enable trust proxy - Add this before other middleware
+// Enable trust proxy - Add this FIRST
 app.set("trust proxy", 1);
 
 // ES Module compatibility
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Middleware
-// Updated CORS configuration
-app.use((req, res, next) => {
-  res.setHeader("Connection", "keep-alive");
-  res.setHeader("Keep-Alive", "timeout=30");
-  next();
-});
-
-// Enhanced CORS configuration
+// FIXED: Enhanced CORS configuration - this should be before other middleware
 const corsOptions = {
-  origin: ["https://rudracodes.netlify.app", "http://localhost:5173"],
+  origin: function (origin, callback) {
+    const allowedOrigins = [
+      "https://rudracodes.netlify.app",
+      "http://localhost:5173",
+      "http://localhost:3000",
+      "http://localhost:5000",
+    ];
+
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error("Not allowed by CORS"));
+    }
+  },
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
   allowedHeaders: [
     "Content-Type",
@@ -70,54 +72,86 @@ const corsOptions = {
     "X-Requested-With",
     "Accept",
     "Origin",
+    "Access-Control-Request-Method",
+    "Access-Control-Request-Headers",
   ],
   credentials: true,
-  optionsSuccessStatus: 204,
+  optionsSuccessStatus: 200,
+  preflightContinue: false,
 };
 
+// Apply CORS first
 app.use(cors(corsOptions));
+
+// Handle preflight requests explicitly
 app.options("*", cors(corsOptions));
 
-// Database connection optimization
-connection(databaseurl, {
-  connectTimeoutMS: 30000,
-  socketTimeoutMS: 45000,
-  serverSelectionTimeoutMS: 30000,
-  maxPoolSize: 10,
-  retryWrites: true,
-  retryReads: true,
+// Add connection headers middleware
+app.use((req, res, next) => {
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("Keep-Alive", "timeout=30");
+  next();
 });
 
-// Replace your current /api/status endpoint with this
+// Basic middleware
+app.use(cookieParser());
+app.use(express.json({ limit: "10kb" }));
+
+// FIXED: Status endpoint with proper database check
 app.get("/api/status", async (req, res) => {
   try {
-    // Add database connectivity check
-    const dbStatus = await mongoose.connection.db.admin().ping();
+    let dbStatus = "disconnected";
+
+    if (mongoose.connection.readyState === 1) {
+      // Try to ping database
+      await mongoose.connection.db.admin().ping();
+      dbStatus = "connected";
+    }
 
     res.status(200).json({
       status: "online",
       timestamp: new Date().toISOString(),
-      database: dbStatus.ok ? "connected" : "disconnected",
+      database: dbStatus,
       service: "portfolio-backend",
       uptime: process.uptime(),
+      ready: isReady,
     });
   } catch (error) {
+    console.error("Status check error:", error);
     res.status(500).json({
       status: "degraded",
       error: error.message,
       database: "disconnected",
+      timestamp: new Date().toISOString(),
     });
   }
 });
-//app.use(cacheMiddleware);
-app.post("/api/admin/clear-cache", (req, res) => {
-  clearAllCache();
-  res.json({ success: true, message: "Cache cleared" });
+
+// Ready endpoint
+app.get("/api/ready", (req, res) => {
+  if (isReady) {
+    res.status(200).json({ status: "ready", message: "Server is ready" });
+  } else {
+    res
+      .status(503)
+      .json({ status: "initializing", message: "Server is starting up" });
+  }
 });
-app.use(cookieParser());
-app.use(express.json({ limit: "10kb" }));
+
+// Root endpoint for basic health check
+app.get("/", (req, res) => {
+  res.status(200).json({
+    message: "Portfolio Backend API",
+    status: "running",
+    timestamp: new Date().toISOString(),
+  });
+});
+
+// Session and tracking middleware
 app.use(sessionMiddleware);
 app.use(trackPageView);
+
+// Security middleware
 app.use(
   helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" },
@@ -126,11 +160,11 @@ app.use(
   })
 );
 
+// Static files
 app.use(
   "/uploads",
   express.static(path.join(__dirname, "./uploads"), {
     setHeaders: (res, path) => {
-      // Set cache control headers
       res.set("Cache-Control", "no-cache");
       res.set("Pragma", "no-cache");
       res.set("Expires", "0");
@@ -138,24 +172,55 @@ app.use(
   })
 );
 
-// Updated rate limiters with proper IP extraction
+// FIXED: Rate limiters with better configuration
 const adminLimiter = rateLimit({
-  max: 100,
   windowMs: 60 * 60 * 1000, // 1 hour
-  message: "Too many admin requests from this IP, please try again in an hour!",
+  max: 100,
+  message: {
+    error: "Too many admin requests from this IP, please try again in an hour!",
+  },
   standardHeaders: true,
   legacyHeaders: false,
+  handler: (req, res) => {
+    res.status(429).json({
+      error: "Too many requests",
+      message:
+        "Too many admin requests from this IP, please try again in an hour!",
+      retryAfter: Math.round((60 * 60 * 1000) / 1000),
+    });
+  },
 });
 
 const portfolioLimiter = rateLimit({
-  max: 300,
   windowMs: 15 * 60 * 1000, // 15 minutes
-  message: "Too many requests from this IP, please try again in 15 minutes!",
+  max: 300,
+  message: {
+    error: "Too many requests from this IP, please try again in 15 minutes!",
+  },
   standardHeaders: true,
   legacyHeaders: false,
+  handler: (req, res) => {
+    res.status(429).json({
+      error: "Too many requests",
+      message:
+        "Too many requests from this IP, please try again in 15 minutes!",
+      retryAfter: Math.round((15 * 60 * 1000) / 1000),
+    });
+  },
 });
 
-// Apply stricter rate limiting only to admin routes
+// Cache management
+app.post("/api/admin/clear-cache", (req, res) => {
+  try {
+    clearAllCache();
+    res.json({ success: true, message: "Cache cleared" });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Failed to clear cache" });
+  }
+});
+
+// Apply rate limiting
+app.use("/api/auth", adminLimiter);
 app.use("/api/home", adminLimiter);
 app.use("/api/about", adminLimiter);
 app.use("/api/education", adminLimiter);
@@ -165,8 +230,6 @@ app.use("/api/certificate", adminLimiter);
 app.use("/api/dashboard", adminLimiter);
 app.use("/api/messages", adminLimiter);
 app.use("/api/upload", adminLimiter);
-
-// Apply more lenient rate limiting to user-facing routes
 app.use("/api/user", portfolioLimiter);
 
 // Admin status tracking
@@ -174,14 +237,6 @@ let isAdminActive = false;
 
 app.get("/api/admin/active-status", (req, res) => {
   res.json({ isActive: isAdminActive });
-});
-
-app.post("/api/admin/login", async (req, res) => {
-  // Your existing login logic
-  if (loginSuccessful) {
-    isAdminActive = true;
-    // Rest of your login code
-  }
 });
 
 app.post("/api/admin/clear-active-status", (req, res) => {
@@ -200,18 +255,64 @@ app.use("/api/certificate", certificateRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/messages", messageRoutes);
 app.use("/api/user", userDataRoutes);
-app.use("/api/upload", UpdateData);
+app.use("/api/upload", uploadRoutes); // Fixed: use uploadRoutes instead of UpdateData
 app.use("/api/views", adminViewsRoutes);
 
-// Error handling
+// 404 handler for undefined routes
+app.use("*", (req, res) => {
+  res.status(404).json({
+    error: "Route not found",
+    message: `Cannot ${req.method} ${req.originalUrl}`,
+    availableRoutes: ["/api/status", "/api/ready", "/api/auth", "/api/user"],
+  });
+});
+
+// Global error handling
 app.use(globalErrorHandler);
 
+// Database connection with better error handling
+const connectDatabase = async () => {
+  try {
+    await connection(databaseurl, {
+      connectTimeoutMS: 30000,
+      socketTimeoutMS: 45000,
+      serverSelectionTimeoutMS: 30000,
+      maxPoolSize: 10,
+      retryWrites: true,
+      retryReads: true,
+    });
+
+    console.log("Database connected successfully");
+    isReady = true;
+  } catch (error) {
+    console.error("Database connection failed:", error);
+    // Don't exit the process, keep trying to reconnect
+    setTimeout(connectDatabase, 5000);
+  }
+};
+
 // Start server
-app.listen(port, () => {
-  console.log(`server is running on https://localhost:${port}`);
+const server = app.listen(port, () => {
+  console.log(`Server is running on port ${port}`);
+  console.log(`Environment: ${process.env.NODE_ENV || "development"}`);
+  connectDatabase();
 });
 
-// Database connection
-connection(databaseurl).then(() => {
-  isReady = true;
+// Graceful shutdown
+process.on("SIGTERM", () => {
+  console.log("SIGTERM received, shutting down gracefully");
+  server.close(() => {
+    console.log("Process terminated");
+    process.exit(0);
+  });
 });
+
+process.on("SIGINT", () => {
+  console.log("SIGINT received, shutting down gracefully");
+  server.close(() => {
+    console.log("Process terminated");
+    process.exit(0);
+  });
+});
+
+export default app;
