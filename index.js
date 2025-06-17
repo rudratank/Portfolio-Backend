@@ -33,7 +33,6 @@ import cacheMiddleware, {
 
 let isReady = false;
 
-server.timeout = 30000;
 // Configuration
 const app = express();
 const port = process.env.PORT || 3005;
